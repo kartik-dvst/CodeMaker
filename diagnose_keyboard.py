@@ -1,13 +1,30 @@
 #!/usr/bin/env python3
 """Diagnostic: monitor ALL keyboard devices to find which one receives your keypresses.
 
-Usage: sudo .venv/bin/python diagnose_keyboard.py
+Usage (Linux only): sudo .venv/bin/python diagnose_keyboard.py
 
 Press any keys and see which device lights up. Press Ctrl+C to stop.
+
+On macOS, keyboard device selection is not needed — Quartz handles it automatically.
 """
 
-import selectors
 import sys
+
+if sys.platform == "darwin":
+    print("=" * 70)
+    print("  CodeMaker Keyboard Diagnostic")
+    print("=" * 70)
+    print()
+    print("  ℹ️  macOS does not require keyboard device selection.")
+    print("  Quartz CGEventTap automatically intercepts all keyboard input.")
+    print()
+    print("  Just make sure you have Accessibility permissions enabled:")
+    print("    System Settings → Privacy & Security → Accessibility")
+    print("    Add your terminal app (e.g., Terminal.app, iTerm2)")
+    print()
+    sys.exit(0)
+
+import selectors
 
 import evdev
 from evdev import ecodes as e, InputDevice, categorize

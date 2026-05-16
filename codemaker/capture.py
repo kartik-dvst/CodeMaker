@@ -1,16 +1,18 @@
-"""Screenshot capture with universal compositor support.
+"""Screenshot capture with universal platform support.
 
-Fallback chain: grim → gnome-screenshot → spectacle → Pillow
+Fallback chain:
+  Linux:  grim → gnome-screenshot → spectacle → Pillow
+  macOS:  screencapture → Pillow
+
 Each method is tried in order until one succeeds.
 
-When running as root (via sudo), we automatically recover the
+When running as root (via sudo) on Linux, we automatically recover the
 original user's Wayland/X11 environment so screenshot tools can
 connect to the compositor.
 """
 
 import logging
 import os
-import pwd
 import shutil
 import subprocess
 import sys
@@ -43,6 +45,7 @@ def _get_wayland_env() -> dict[str, str]:
         uid = sudo_uid
     elif sudo_user:
         try:
+            import pwd
             uid = str(pwd.getpwnam(sudo_user).pw_uid)
         except KeyError:
             uid = None
@@ -74,6 +77,7 @@ def _get_wayland_env() -> dict[str, str]:
     # Recover HOME for tools that need ~/.config
     if sudo_user and env.get("HOME") == "/root":
         try:
+            import pwd
             env["HOME"] = pwd.getpwnam(sudo_user).pw_dir
         except KeyError:
             pass
@@ -85,8 +89,8 @@ def capture_screenshot(preferred_tool: str = "auto") -> bytes:
     """Capture the primary monitor and return PNG bytes.
 
     Args:
-        preferred_tool: "grim", "gnome-screenshot", "spectacle", "pillow",
-                        or "auto" (tries each in order).
+        preferred_tool: "grim", "gnome-screenshot", "spectacle", "screencapture",
+                        "pillow", or "auto" (tries each in order).
 
     Returns:
         PNG image bytes.
@@ -103,8 +107,12 @@ def capture_screenshot(preferred_tool: str = "auto") -> bytes:
             return result
         raise RuntimeError(f"Screenshot tool '{preferred_tool}' failed")
 
-    # Auto: detect compositor and try tools in the right order
-    tools = _get_tools_order() if sys.platform != "win32" else _ALL_TOOLS
+    # Auto: detect platform and try tools in the right order
+    if sys.platform == "darwin":
+        tools = _MACOS_TOOLS
+    else:
+        tools = _get_tools_order()
+
     for name, func in tools.items():
         try:
             result = func()
@@ -115,11 +123,53 @@ def capture_screenshot(preferred_tool: str = "auto") -> bytes:
             logger.debug("Screenshot method '%s' failed: %s", name, ex)
             continue
 
-    raise RuntimeError(
-        "All screenshot methods failed. Install 'grim' (wlroots), "
-        "or ensure gnome-screenshot/xdg-desktop-portal is available.\n"
-        "If running via sudo, try: sudo -E .venv/bin/python -m codemaker"
-    )
+    if sys.platform == "darwin":
+        raise RuntimeError(
+            "All screenshot methods failed.\n"
+            "Ensure Screen Recording permission is granted:\n"
+            "  System Settings → Privacy & Security → Screen Recording\n"
+            "  Add your terminal app (e.g., Terminal.app, iTerm2) to the list."
+        )
+    else:
+        raise RuntimeError(
+            "All screenshot methods failed. Install 'grim' (wlroots), "
+            "or ensure gnome-screenshot/xdg-desktop-portal is available.\n"
+            "If running via sudo, try: sudo -E .venv/bin/python -m codemaker"
+        )
+
+
+# ── Screenshot methods ──
+
+
+def _capture_screencapture() -> Optional[bytes]:
+    """Capture using macOS built-in screencapture utility."""
+    # Use absolute path — launchd provides a minimal PATH that
+    # typically excludes /usr/sbin where screencapture lives
+    screencapture_bin = "/usr/sbin/screencapture"
+    if not os.path.isfile(screencapture_bin):
+        screencapture_bin = shutil.which("screencapture")
+    if not screencapture_bin:
+        return None
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        result = subprocess.run(
+            [screencapture_bin, "-x", tmp_path],  # -x = no sound
+            capture_output=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            logger.debug(
+                "screencapture stderr: %s",
+                result.stderr.decode(errors="replace"),
+            )
+            return None
+        p = Path(tmp_path)
+        if not p.exists() or p.stat().st_size == 0:
+            return None
+        return p.read_bytes()
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
 
 
 def _capture_grim() -> Optional[bytes]:
@@ -190,7 +240,7 @@ def _capture_spectacle() -> Optional[bytes]:
 
 
 def _capture_pillow() -> Optional[bytes]:
-    """Capture using Pillow's ImageGrab (X11 or Windows fallback)."""
+    """Capture using Pillow's ImageGrab (X11 or macOS fallback)."""
     try:
         from PIL import ImageGrab
         import io
@@ -217,7 +267,7 @@ def _detect_compositor() -> str:
     if not desktop:
         try:
             ps_output = subprocess.run(
-                ["ps", "-eo", "comm", "--no-headers"],
+                ["ps", "-eo", "comm"],
                 capture_output=True, text=True, timeout=5,
             ).stdout.lower()
 
@@ -295,19 +345,17 @@ def _get_tools_order() -> dict[str, callable]:
         }
 
 
-if sys.platform == "win32":
-    def _capture_windows() -> Optional[bytes]:
-        """Windows screenshot via Pillow ImageGrab."""
-        return _capture_pillow()
+# ── Tool registries ──
 
-    _ALL_TOOLS = {
-        "windows": _capture_windows,
-        "pillow": _capture_pillow,
-    }
-else:
-    _ALL_TOOLS = {
-        "grim": _capture_grim,
-        "gnome-screenshot": _capture_gnome_screenshot,
-        "spectacle": _capture_spectacle,
-        "pillow": _capture_pillow,
-    }
+_MACOS_TOOLS = {
+    "screencapture": _capture_screencapture,
+    "pillow": _capture_pillow,
+}
+
+_ALL_TOOLS = {
+    "screencapture": _capture_screencapture,
+    "grim": _capture_grim,
+    "gnome-screenshot": _capture_gnome_screenshot,
+    "spectacle": _capture_spectacle,
+    "pillow": _capture_pillow,
+}

@@ -31,9 +31,9 @@ def _detect_platform(config: Config) -> PlatformHook:
     if sys.platform == "linux":
         from .platform.linux import LinuxHook
         return LinuxHook(keyboard_device_path=config.keyboard_device)
-    elif sys.platform == "win32":
-        from .platform.windows import WindowsHook
-        return WindowsHook()
+    elif sys.platform == "darwin":
+        from .platform.macos import MacOSHook
+        return MacOSHook()
     else:
         print(
             f"[CodeMaker] Unsupported platform: {sys.platform}",
